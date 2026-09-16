@@ -3,11 +3,1224 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Game</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <title>ხინკალი და ხორბალი — საქართველოს 19%</title>
+    <style>
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #ffffff;
+        font-family: "Noto Sans Georgian", "Chalkboard SE", "Comic Sans MS", sans-serif;
+        color: #111111;
+        overflow: hidden;
+      }
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #game {
+        width: 100vw;
+        height: 100vh;
+      }
+
+      canvas {
+        display: block;
+      }
+    </style>
   </head>
   <body>
     <div id="game"></div>
-    <script type="module" src="/src/main.ts"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Georgian:wght@400;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.90.0/dist/phaser.min.js"></script>
+    <script>
+      'use strict';
+
+      // =====================================================================
+      //  Constants & tuning
+      // =====================================================================
+      const W = 1200;
+      const H = 760;
+      const LOCAL_CAP_PERCENT = 19;
+      const FONT = '"Noto Sans Georgian", "Chalkboard SE", "Comic Sans MS", sans-serif';
+
+      // A hand-inked palette: ink, paper, and greys for distance and shade.
+      const INK = 0x111111;
+      const PAPER = 0xffffff;
+      const GREY = 0xbdbdbd;
+      const GREY_DARK = 0x7a7a7a;
+      const GREY_LIGHT = 0xe4e4e4;
+      const C = { ink: '#111111', muted: '#666666', paper: '#ffffff' };
+
+      const RULES = {
+        plots: 4,                  // the 19% cap: four plots, forever
+        matureStage: 2,            // watered nights needed before harvest
+        wheatPerHarvest: 2,
+        startMoney: 40,
+        startSeeds: 8,
+        startWheat: 2,
+        startFlour: 3,
+        khinkaliPrice: 10,
+        importBase: 8,             // base import price per sack
+        seedPackPrice: 3,
+        seedPackSize: 4,
+        maxPlates: 3,
+        energyMax: 100,
+        energy: { till: 6, plant: 3, water: 4, harvest: 5, mill: 2, cook: 2 },
+        eatEnergy: 30,
+        repGain: 2,
+        repLoss: 8,
+        // clock: 10 game minutes per real second -> an 18h day lasts 108s
+        minutesPerSecond: 10,
+        dayStart: 6 * 60,
+        dayEnd: 24 * 60,
+        openAt: 10 * 60,
+        closeAt: 21 * 60,
+        spawnStart: 12000,
+        spawnMin: 4000,
+        spawnPerDay: 1200,
+        patienceStart: 26000,
+        patienceMin: 12000,
+        patiencePerDay: 1500,
+        playerSpeed: 210
+      };
+
+      const HATS = ['bowler', 'cap', 'hair', 'none', 'cowboy'];
+
+      const NEWS = [
+        { p: 1.0, w: 0.5, text: 'იმპორტის ფასი დღეს სტაბილურია.' },
+        { p: 1.5, w: 0.25, text: 'ექსპორტის აკრძალვა საზღვარგარეთ — იმპორტული ფქვილი დღეს 50%-ით ძვირია!' },
+        { p: 1.25, w: 0.1, text: 'სუსტი ლარი — იმპორტი დღეს უფრო ძვირია.' },
+        { p: 0.75, w: 0.15, text: 'უხვი მოსავალი საზღვარგარეთ — იმპორტული ფქვილი დღეს იაფია.' }
+      ];
+
+      // =====================================================================
+      //  Hand-drawn helpers: every outline is jittered so it looks inked
+      // =====================================================================
+      let seedCounter = 1;
+      function nextSeed() { seedCounter += 1; return seedCounter; }
+
+      function sketchPoly(g, pts, seed, fill, lw = 3, closed = true, stroke = INK) {
+        const rnd = new Phaser.Math.RandomDataGenerator([String(seed)]);
+        const out = [];
+        const n = pts.length;
+        const edges = closed ? n : n - 1;
+        for (let i = 0; i < edges; i += 1) {
+          const a = pts[i], b = pts[(i + 1) % n];
+          const len = Math.hypot(b.x - a.x, b.y - a.y);
+          const segs = Math.max(1, Math.round(len / 12));
+          for (let s = 0; s < segs; s += 1) {
+            const t = s / segs;
+            out.push({
+              x: a.x + (b.x - a.x) * t + rnd.realInRange(-1.4, 1.4),
+              y: a.y + (b.y - a.y) * t + rnd.realInRange(-1.4, 1.4)
+            });
+          }
+        }
+        if (!closed) out.push({ x: pts[n - 1].x, y: pts[n - 1].y });
+        if (fill !== undefined) { g.fillStyle(fill, 1); g.fillPoints(out, true); }
+        if (lw > 0) { g.lineStyle(lw, stroke, 1); g.strokePoints(out, closed); }
+      }
+
+      function sketchRect(g, x, y, w, h, fill, lw = 3, seed = nextSeed()) {
+        sketchPoly(g, [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }], seed, fill, lw);
+      }
+
+      function sketchCircle(g, cx, cy, r, fill, lw = 3, seed = nextSeed()) {
+        const pts = [];
+        const n = Math.max(10, Math.round(r * 1.2));
+        for (let i = 0; i < n; i += 1) {
+          const a = (i / n) * Math.PI * 2;
+          pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+        }
+        sketchPoly(g, pts, seed, fill, lw);
+      }
+
+      function sketchLine(g, x1, y1, x2, y2, lw = 3, seed = nextSeed()) {
+        sketchPoly(g, [{ x: x1, y: y1 }, { x: x2, y: y2 }], seed, undefined, lw, false);
+      }
+
+      function stipple(g, x, y, w, h, count, seed = nextSeed()) {
+        const rnd = new Phaser.Math.RandomDataGenerator([String(seed)]);
+        g.fillStyle(INK, 1);
+        for (let i = 0; i < count; i += 1) {
+          g.fillCircle(rnd.between(x, x + w), rnd.between(y, y + h), rnd.realInRange(0.8, 1.5));
+        }
+      }
+
+      function hatch(g, x, y, w, h, gap = 16, lw = 2) {
+        g.lineStyle(lw, INK, 0.7);
+        for (let d = -h; d < w; d += gap) {
+          const x1 = Math.max(x, x + d), y1 = y + Math.max(0, -d);
+          const x2 = Math.min(x + w, x + d + h), y2 = y + Math.min(h, w - d);
+          if (x2 > x1) g.lineBetween(x1, y1, x2, y2);
+        }
+      }
+
+      // A stick figure standing on (0, 12) with its head at (0, -31).
+      function drawStick(g, hat, seed) {
+        sketchLine(g, 0, -4, -7, 12, 3, seed + 1); sketchLine(g, 0, -4, 7, 12, 3, seed + 2);
+        sketchLine(g, 0, -22, 0, -4, 3, seed + 3);
+        sketchLine(g, 0, -17, -10, -7, 3, seed + 4); sketchLine(g, 0, -17, 10, -7, 3, seed + 5);
+        sketchCircle(g, 0, -31, 9, PAPER, 3, seed + 6);
+        g.fillStyle(INK, 1); g.fillCircle(-3, -32, 1.5); g.fillCircle(3, -32, 1.5);
+        if (hat === 'cowboy') {
+          sketchLine(g, -15, -38, 15, -38, 3, seed + 7);
+          sketchRect(g, -7, -49, 14, 11, PAPER, 3, seed + 8);
+        } else if (hat === 'bowler') {
+          sketchLine(g, -12, -38, 12, -38, 3, seed + 7);
+          sketchPoly(g, [{ x: -7, y: -38 }, { x: -7, y: -44 }, { x: 0, y: -49 }, { x: 7, y: -44 }, { x: 7, y: -38 }], seed + 8, INK, 2);
+        } else if (hat === 'cap') {
+          sketchPoly(g, [{ x: -9, y: -38 }, { x: -8, y: -45 }, { x: 0, y: -48 }, { x: 8, y: -45 }, { x: 9, y: -38 }], seed + 8, INK, 2);
+          sketchLine(g, 5, -38, 17, -37, 3, seed + 9);
+        } else if (hat === 'hair') {
+          g.fillStyle(INK, 1); g.fillEllipse(0, -38, 18, 8);
+        }
+      }
+
+      function text(scene, x, y, str, size, color, extra = {}) {
+        return scene.add.text(x, y, str, Object.assign({
+          fontFamily: FONT, fontSize: size + 'px', color: color || C.ink
+        }, extra));
+      }
+
+      function panel(scene, x, y, w, h, fill = PAPER) {
+        const g = scene.add.graphics();
+        sketchRect(g, x, y, w, h, fill, 4);
+        return g;
+      }
+
+      function makeButton(scene, x, y, w, h, label, sub, onClick) {
+        const g = scene.add.graphics();
+        sketchRect(g, -w / 2, -h / 2, w, h, PAPER, 4);
+        const children = [g, text(scene, 0, sub ? -9 : 0, label, 20, C.ink, { fontStyle: 'bold' }).setOrigin(0.5)];
+        if (sub) children.push(text(scene, 0, 13, sub, 13, C.muted).setOrigin(0.5));
+        const btn = scene.add.container(x, y, children);
+        btn.setSize(w, h).setInteractive({ useHandCursor: true });
+        btn.enabled = true;
+        btn.on('pointerover', () => { if (btn.enabled) btn.setScale(1.04); });
+        btn.on('pointerout', () => btn.setScale(1));
+        btn.on('pointerdown', () => { if (btn.enabled) { btn.setScale(0.97); onClick(); } });
+        btn.on('pointerup', () => { if (btn.enabled) btn.setScale(1.04); });
+        btn.setEnabled = (on) => { btn.enabled = on; btn.setAlpha(on ? 1 : 0.35); if (!on) btn.setScale(1); };
+        return btn;
+      }
+
+      // Outlined bar with a black fill that shrinks from the left.
+      function makeBar(scene, x, y, w, h, depth) {
+        const g = scene.add.graphics().setDepth(depth);
+        sketchRect(g, x, y - h / 2, w, h, PAPER, 2);
+        return scene.add.rectangle(x + 2, y, w - 4, h - 4, INK).setOrigin(0, 0.5).setDepth(depth);
+      }
+
+      function clock(minutes) {
+        const m = Math.floor(minutes);
+        return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+      }
+
+      function rectsOverlap(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+      }
+
+      // =====================================================================
+      //  Boot scene: textures + title card
+      // =====================================================================
+      class BootScene extends Phaser.Scene {
+        constructor() { super('Boot'); }
+
+        create() {
+          this.makeTextures();
+          this.cameras.main.setBackgroundColor(PAPER);
+          stipple(this.add.graphics(), 0, 0, W, H, 700);
+          panel(this, 170, 60, 860, 640);
+
+          this.add.image(W / 2, 135, 'khinkali').setScale(2);
+          text(this, W / 2, 210, 'ხინკალი და ხორბალი', 40, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          text(this, W / 2, 250, 'მართე ფერმა და სახინკლე ქვეყანაში, რომელსაც საკუთარი ხორბლის მხოლოდ ' + LOCAL_CAP_PERCENT + '% მოჰყავს', 16, C.muted).setOrigin(0.5);
+
+          const cols = [
+            ['ფერმა', [
+              'იარე WASD-ით ან ისრებით; E — მოქმედება.',
+              'გადათოხნე ნაკვეთი, დათესე თესლი, მორწყე ყოველდღე.',
+              'ხორბალი მწიფდება ' + RULES.matureStage + ' მორწყული ღამის შემდეგ.',
+              'წაიღე ხორბალი წისქვილში ფქვილის დასამზადებლად.',
+              'მხოლოდ ' + RULES.plots + ' ნაკვეთია — მიწა არასდროს გაიზრდება.'
+            ]],
+            ['სახინკლე', [
+              'ღიაა 10:00–21:00. სტუმრები სხედან და ელოდებიან.',
+              'მოამზადე ქურაზე: 1 ფქვილი + ხორცი = 1 თეფში.',
+              'მიუტანე თეფშები (მაქს. ' + RULES.maxPlates + ') იმას, ვინც შეუკვეთა.',
+              'ნელი მომსახურება = გაბრაზებული სტუმრები = დაკარგული რეპუტაცია.',
+              'რეპუტაცია 0% — თამაში მთავრდება.'
+            ]],
+            ['გადარჩენა', [
+              'შრომას ენერგია სჭირდება. დააჭირე Q-ს, რომ შეჭამო თეფში (+' + RULES.eatEnergy + ').',
+              'დაიძინე ფერმის სახლში დღის დასასრულებლად.',
+              'იმპორტის სატვირთო უცხოურ ფქვილს ყიდის…',
+              '…ფასად, რომელიც მსოფლიო ბაზარს მიჰყვება.',
+              'ყოველი იმპორტი ბოლოს შენს წინააღმდეგ ითვლება.'
+            ]]
+          ];
+          cols.forEach(([title, lines], i) => {
+            const x = 200 + i * 280;
+            text(this, x, 290, title, 13, C.muted, { fontStyle: 'bold' });
+            text(this, x, 312, lines.join('\n'), 13, C.ink, { lineSpacing: 8, wordWrap: { width: 262 } });
+          });
+
+          text(this, W / 2, 556, LOCAL_CAP_PERCENT + '% ადგილობრივი ხორბლის ლიმიტი', 15, C.paper, {
+            fontStyle: 'bold', backgroundColor: '#111111', padding: { x: 14, y: 8 }
+          }).setOrigin(0.5);
+
+          makeButton(this, W / 2, 622, 260, 62, 'დაიწყე 1-ლი დღე', null, () => this.scene.start('MainGame'));
+          text(this, W / 2, 674, 'დასაწყებად დააჭირე Enter-ს', 14, C.muted).setOrigin(0.5);
+          this.input.keyboard.once('keydown-ENTER', () => this.scene.start('MainGame'));
+        }
+
+        makeTextures() {
+          const g = this.make.graphics({ x: 0, y: 0, add: false });
+
+          // Khinkali dumpling
+          sketchCircle(g, 24, 34, 18, PAPER, 3, 101);
+          for (let i = -3; i <= 3; i += 1) sketchLine(g, 24, 18, 24 + i * 5.5, 38, 2, 110 + i);
+          sketchCircle(g, 24, 12, 7, PAPER, 3, 102);
+          g.generateTexture('khinkali', 48, 54); g.clear();
+
+          // Plate of khinkali
+          sketchCircle(g, 20, 20, 18, PAPER, 2, 103);
+          sketchCircle(g, 20, 23, 10, PAPER, 2, 104);
+          sketchCircle(g, 20, 12, 4, PAPER, 2, 105);
+          g.generateTexture('plate', 40, 40); g.clear();
+
+          // Local flour sack (white) and imported sack (grey, stamped)
+          sketchRect(g, 3, 12, 30, 26, PAPER, 3, 106);
+          sketchRect(g, 11, 4, 14, 10, INK, 2, 107);
+          g.generateTexture('sack', 36, 40); g.clear();
+          sketchRect(g, 3, 12, 30, 26, GREY, 3, 108);
+          sketchRect(g, 11, 4, 14, 10, INK, 2, 109);
+          sketchLine(g, 8, 18, 28, 34, 2, 120); sketchLine(g, 28, 18, 8, 34, 2, 121);
+          g.generateTexture('sackImport', 36, 40); g.clear();
+
+          // Wheat bundle
+          for (let i = 0; i < 3; i += 1) {
+            const x = 8 + i * 8;
+            sketchLine(g, x, 36, x, 14, 2, 130 + i);
+            sketchCircle(g, x, 10, 4, PAPER, 2, 140 + i);
+          }
+          sketchLine(g, 4, 28, 28, 28, 3, 150);
+          g.generateTexture('wheat', 32, 38); g.clear();
+
+          // Seeds
+          g.fillStyle(INK, 1);
+          g.fillEllipse(8, 12, 6, 9); g.fillEllipse(16, 8, 6, 9); g.fillEllipse(17, 18, 6, 9);
+          g.generateTexture('seed', 24, 24); g.clear();
+
+          // Meat (a little steak)
+          sketchCircle(g, 18, 18, 14, GREY, 3, 160);
+          sketchCircle(g, 14, 15, 4, PAPER, 2, 161);
+          g.generateTexture('meat', 36, 36); g.clear();
+
+          // Coin
+          sketchCircle(g, 10, 10, 9, PAPER, 2, 170);
+          sketchLine(g, 10, 5, 10, 15, 2, 171);
+          g.generateTexture('coin', 20, 20); g.clear();
+
+          // Energy bolt
+          g.fillStyle(INK, 1);
+          g.fillTriangle(12, 0, 2, 14, 10, 14);
+          g.fillTriangle(10, 10, 18, 10, 8, 24);
+          g.generateTexture('bolt', 20, 24);
+
+          g.destroy();
+        }
+      }
+
+      // =====================================================================
+      //  Main game scene
+      // =====================================================================
+      class MainGameScene extends Phaser.Scene {
+        constructor() { super('MainGame'); }
+
+        create() {
+          this.over = false;
+          this.paused = false;
+          this.marketOpen = false;
+          this.day = 0;
+          this.timeMin = RULES.dayStart;
+          this.money = RULES.startMoney;
+          this.energy = RULES.energyMax;
+          this.reputation = 100;
+          this.inv = { seeds: RULES.startSeeds, wheat: RULES.startWheat, localFlour: RULES.startFlour, importedFlour: 0, plates: 0 };
+          this.totals = { arrived: 0, served: 0, servedLocal: 0, servedImported: 0, angry: 0, harvested: RULES.startFlour + RULES.startWheat, imported: 0, importSpend: 0, revenue: 0 };
+          this.importPrice = RULES.importBase;
+          this.news = '';
+          this.customers = [];
+          this.tables = [];
+          this.plots = [];
+          this.solids = [];
+          this.interactables = [];
+          this.spawnTimer = 3000;
+          this.collapsed = false;
+          this.current = null;
+
+          this.cameras.main.setBackgroundColor(PAPER);
+          this.cameras.main.fadeIn(400);
+
+          this.buildHorizon();
+          this.buildFarm();
+          this.buildRestaurant();
+          this.createPlayer();
+          this.createHud();
+          this.createMarketPanel();
+          this.createDayOverlay();
+
+          this.keys = this.input.keyboard.addKeys('W,A,S,D,E,Q,SPACE,ESC,ENTER,UP,DOWN,LEFT,RIGHT');
+          this.startDay(true);
+        }
+
+        // ============================================================== Horizon
+        buildHorizon() {
+          const g = this.add.graphics();
+          g.fillStyle(GREY_DARK, 1);
+          g.fillPoints([{ x: 0, y: 128 }, { x: 0, y: 105 }, { x: 120, y: 84 }, { x: 260, y: 108 }, { x: 380, y: 78 }, { x: 520, y: 104 }, { x: 700, y: 82 }, { x: 900, y: 110 }, { x: 1050, y: 86 }, { x: 1200, y: 108 }, { x: 1200, y: 128 }], true);
+          g.fillStyle(GREY, 1);
+          g.fillPoints([{ x: 0, y: 128 }, { x: 0, y: 118 }, { x: 200, y: 100 }, { x: 420, y: 122 }, { x: 640, y: 98 }, { x: 860, y: 124 }, { x: 1000, y: 104 }, { x: 1200, y: 122 }, { x: 1200, y: 128 }], true);
+          g.fillStyle(INK, 1);
+          [30, 70, 250, 300, 560, 610, 950, 990, 1140].forEach((x, i) => {
+            const h = 22 + (i % 3) * 8;
+            g.fillTriangle(x - 8, 128, x + 8, 128, x, 128 - h);
+            g.fillTriangle(x - 6, 128 - h * 0.5, x + 6, 128 - h * 0.5, x, 128 - h - 6);
+          });
+          // clouds: strokes first, then white fills, so only the union outline shows
+          const clouds = [[150, 86, [[0, 0, 14], [16, -6, 11], [30, 2, 10], [-14, 4, 9]]], [470, 78, [[0, 0, 10], [12, -4, 8], [22, 2, 7]]], [1080, 84, [[0, 0, 12], [15, -5, 10], [28, 1, 9], [-12, 3, 8]]]];
+          clouds.forEach(([cx, cy, blobs]) => {
+            blobs.forEach(([dx, dy, r]) => sketchCircle(g, cx + dx, cy + dy, r, undefined, 3));
+            g.fillStyle(PAPER, 1);
+            blobs.forEach(([dx, dy, r]) => g.fillCircle(cx + dx, cy + dy, r - 1.5));
+          });
+          sketchLine(g, 0, 128, W, 128, 3);
+        }
+
+        // ================================================================ Farm
+        buildFarm() {
+          const g = this.add.graphics();
+          stipple(g, 0, 132, 600, 566, 420);
+
+          // road along the bottom
+          g.fillStyle(GREY_LIGHT, 1); g.fillRect(0, 700, 1200, 60);
+          sketchLine(g, 0, 700, 1200, 700, 3);
+          g.lineStyle(3, INK, 1);
+          for (let x = 10; x < 1200; x += 44) g.lineBetween(x, 731, x + 22, 731);
+
+          // a single vineyard row behind the buildings (they sit in front of it)
+          const vineRow = (x1, x2, y) => {
+            sketchLine(g, x1, y - 22, x2, y - 22, 2);
+            sketchLine(g, x1, y - 12, x2, y - 12, 2);
+            for (let x = x1; x <= x2; x += 40) {
+              sketchLine(g, x, y - 30, x, y + 2, 3);
+              if (x + 40 <= x2) {
+                const cx = x + 20;
+                sketchCircle(g, cx - 6, y - 17, 4, INK, 0); sketchCircle(g, cx + 6, y - 17, 4, INK, 0);
+                sketchCircle(g, cx, y - 15, 4, INK, 0); sketchCircle(g, cx - 3, y - 9, 4, INK, 0);
+                sketchCircle(g, cx + 3, y - 9, 4, INK, 0); sketchCircle(g, cx, y - 3, 4, INK, 0);
+                sketchPoly(g, [{ x: cx - 12, y: y - 24 }, { x: cx - 4, y: y - 30 }, { x: cx + 2, y: y - 22 }], nextSeed(), PAPER, 2);
+              }
+            }
+          };
+          vineRow(10, 590, 158);
+          this.solids.push({ x: 0, y: 130, w: 600, h: 32 });
+
+          // farmhouse (sleep here)
+          sketchRect(g, 30, 150, 170, 100, PAPER, 4);
+          sketchPoly(g, [{ x: 18, y: 152 }, { x: 115, y: 96 }, { x: 212, y: 152 }], nextSeed(), GREY, 4);
+          sketchRect(g, 98, 198, 34, 52, INK, 3);
+          sketchRect(g, 48, 172, 30, 26, PAPER, 3); sketchLine(g, 63, 172, 63, 198, 2); sketchLine(g, 48, 185, 78, 185, 2);
+          sketchRect(g, 152, 172, 30, 26, PAPER, 3); sketchLine(g, 167, 172, 167, 198, 2); sketchLine(g, 152, 185, 182, 185, 2);
+          text(this, 115, 262, 'ფერმის სახლი', 13, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.solids.push({ x: 30, y: 120, w: 170, h: 130 });
+          this.interactables.push({
+            x: 115, y: 270, r: 40, kind: 'bed',
+            label: () => 'დაძინება — დღის დასრულება',
+            action: () => this.endDay('sleep')
+          });
+
+          // mill
+          sketchRect(g, 300, 150, 130, 100, PAPER, 4);
+          sketchPoly(g, [{ x: 292, y: 152 }, { x: 365, y: 104 }, { x: 438, y: 152 }], nextSeed(), GREY_DARK, 4);
+          sketchLine(g, 365, 140, 365, 80, 4); sketchLine(g, 335, 110, 395, 110, 4);
+          sketchLine(g, 344, 89, 386, 131, 4); sketchLine(g, 386, 89, 344, 131, 4);
+          sketchRect(g, 350, 205, 30, 45, INK, 3);
+          text(this, 365, 262, 'წისქვილი', 13, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.solids.push({ x: 300, y: 120, w: 130, h: 130 });
+          this.interactables.push({
+            x: 365, y: 270, r: 40, kind: 'mill',
+            label: () => this.inv.wheat > 0 ? 'დაფქვი 1 ხორბალი → 1 ფქვილი  (-' + RULES.energy.mill + ' ენერგია)' : 'წისქვილი — ხორბალი არ გაქვს',
+            action: () => this.millWheat()
+          });
+
+          // fenced field with the four plots
+          sketchRect(g, 165, 300, 270, 230, undefined, 4);
+          for (let x = 185; x < 435; x += 30) { sketchLine(g, x, 293, x, 307, 3); sketchLine(g, x, 523, x, 537, 3); }
+          text(this, 300, 546, LOCAL_CAP_PERCENT + '% ადგილობრივი ხორბლის ლიმიტი', 12, C.paper, {
+            fontStyle: 'bold', backgroundColor: '#111111', padding: { x: 8, y: 4 }
+          }).setOrigin(0.5).setDepth(30);
+
+          const positions = [[237, 368], [363, 368], [237, 465], [363, 465]];
+          positions.slice(0, RULES.plots).forEach(([x, y], i) => this.createPlot(i, x, y));
+
+          // trees
+          [[490, 590], [545, 640]].forEach(([x, y]) => {
+            sketchLine(g, x, y + 24, x, y - 4, 4);
+            sketchCircle(g, x, y - 14, 20, PAPER, 3);
+            sketchCircle(g, x - 8, y - 22, 12, PAPER, 3);
+            this.solids.push({ x: x - 16, y: y - 20, w: 32, h: 44 });
+          });
+
+          // import truck parked on the road
+          sketchRect(g, 40, 606, 150, 70, PAPER, 4);
+          sketchRect(g, 190, 626, 50, 50, GREY, 4);
+          sketchRect(g, 198, 634, 34, 18, PAPER, 2);
+          sketchCircle(g, 70, 682, 12, INK, 3); sketchCircle(g, 160, 682, 12, INK, 3); sketchCircle(g, 215, 682, 12, INK, 3);
+          text(this, 115, 640, 'იმპორტი', 16, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.solids.push({ x: 40, y: 606, w: 200, h: 90 });
+          this.interactables.push({
+            x: 140, y: 590, r: 70, kind: 'truck',
+            label: () => 'იმპორტის ბაზარი  (ფქვილი $' + this.importPrice + ' · თესლი)',
+            action: () => this.openMarket()
+          });
+
+          // path to the restaurant door
+          g.fillStyle(GREY_LIGHT, 1); g.fillRect(560, 336, 60, 164);
+          sketchLine(g, 560, 336, 620, 336, 3); sketchLine(g, 560, 500, 620, 500, 3);
+        }
+
+        createPlot(index, x, y) {
+          const plot = {
+            index, x, y, w: 100, h: 74,
+            state: 'grass', stage: 0, watered: false,
+            g: this.add.graphics({ x, y }),
+            status: text(this, x, y + 47, '', 11, C.ink, { fontStyle: 'bold' }).setOrigin(0.5)
+          };
+          this.plots.push(plot);
+          this.interactables.push({
+            x, y, r: 62, kind: 'plot', plot,
+            label: () => this.plotLabel(plot),
+            action: () => this.workPlot(plot)
+          });
+          this.drawPlot(plot);
+        }
+
+        plotLabel(p) {
+          const e = RULES.energy;
+          if (p.state === 'grass') return 'გადათოხნა  (-' + e.till + ' ენერგია)';
+          if (p.state === 'tilled') return this.inv.seeds > 0 ? 'დათესვა  (1 თესლი, -' + e.plant + ' ენერგია)' : 'დათესვა — თესლი გჭირდება (იმპორტის სატვირთო)';
+          if (p.state === 'growing') return p.watered ? 'მორწყულია — ღამით გაიზრდება' : 'მორწყვა  (-' + e.water + ' ენერგია)';
+          return 'მოსავლის აღება  (+' + RULES.wheatPerHarvest + ' ხორბალი, -' + e.harvest + ' ენერგია)';
+        }
+
+        workPlot(p) {
+          const e = RULES.energy;
+          if (p.state === 'grass') {
+            if (!this.spendEnergy(e.till)) return;
+            p.state = 'tilled';
+            this.toast('ნიადაგი გადათოხნილია. ახლა დათესე თესლი.');
+          } else if (p.state === 'tilled') {
+            if (this.inv.seeds <= 0) { this.toast('თესლი აღარ გაქვს — იყიდე იმპორტის სატვირთოსთან.', 'bad'); return; }
+            if (!this.spendEnergy(e.plant)) return;
+            this.inv.seeds -= 1;
+            p.state = 'growing'; p.stage = 0; p.watered = false;
+            this.toast('ხორბალი დათესილია. მორწყე ყოველდღე!');
+          } else if (p.state === 'growing') {
+            if (p.watered) { this.toast('უკვე მორწყულია — ღამით გაიზრდება.'); return; }
+            if (!this.spendEnergy(e.water)) return;
+            p.watered = true;
+            this.toast('მორწყულია.');
+          } else if (p.state === 'mature') {
+            if (!this.spendEnergy(e.harvest)) return;
+            this.inv.wheat += RULES.wheatPerHarvest;
+            this.totals.harvested += RULES.wheatPerHarvest;
+            this.dayStats.harvested += RULES.wheatPerHarvest;
+            p.state = 'tilled'; p.stage = 0; p.watered = false;
+            this.floatText(p.x, p.y - 30, '+' + RULES.wheatPerHarvest + ' ხორბალი');
+            this.toast('მოსავალი აღებულია! წაიღე ხორბალი წისქვილში.');
+          }
+          this.drawPlot(p);
+        }
+
+        drawPlot(p) {
+          const { g, w, h } = p;
+          const seed = 1000 + p.index * 50;   // stable jitter per plot, so redraws don't wiggle
+          g.clear();
+          if (p.state === 'grass') {
+            sketchRect(g, -w / 2, -h / 2, w, h, PAPER, 3, seed);
+            const rnd = new Phaser.Math.RandomDataGenerator([String(seed + 1)]);
+            g.lineStyle(2, INK, 1);
+            for (let i = 0; i < 9; i += 1) {
+              const gx = rnd.between(-w / 2 + 10, w / 2 - 10), gy = rnd.between(-h / 2 + 10, h / 2 - 8);
+              g.lineBetween(gx - 4, gy + 4, gx, gy - 4); g.lineBetween(gx, gy - 4, gx + 4, gy + 4);
+            }
+          } else {
+            sketchRect(g, -w / 2, -h / 2, w, h, p.watered ? GREY : PAPER, 3, seed);
+            stipple(g, -w / 2 + 4, -h / 2 + 4, w - 8, h - 8, 40, seed + 2);
+            for (let r = 0; r < 3; r += 1) sketchLine(g, -w / 2 + 8, -h / 2 + 18 + r * 20, w / 2 - 8, -h / 2 + 18 + r * 20, 2, seed + 3 + r);
+          }
+          if (p.state === 'growing' || p.state === 'mature') {
+            const ripe = p.state === 'mature';
+            const stalkH = ripe ? 40 : 10 + p.stage * 14;
+            for (let col = 0; col < 5; col += 1) {
+              const sx = -w / 2 + 14 + col * 18;
+              const base = h / 2 - 8;
+              sketchLine(g, sx, base, sx, base - stalkH, 3, seed + 10 + col);
+              if (ripe) sketchCircle(g, sx, base - stalkH - 6, 5, PAPER, 2, seed + 20 + col);
+              else if (p.stage >= 1) { g.fillStyle(INK, 1); g.fillEllipse(sx, base - stalkH - 3, 5, 8); }
+            }
+          }
+          if (p.state === 'mature') sketchRect(g, -w / 2 - 3, -h / 2 - 3, w + 6, h + 6, undefined, 2, seed + 30);
+
+          p.status.setText(
+            p.state === 'grass' ? 'გადაუთოხნავი' :
+            p.state === 'tilled' ? 'დათესე!' :
+            p.state === 'mature' ? 'მწიფეა — აიღე!' :
+            'დღე ' + (p.stage + 1) + '/' + (RULES.matureStage + 1) + (p.watered ? ' ✓' : ' · მორწყე!')
+          );
+        }
+
+        millWheat() {
+          if (this.inv.wheat <= 0) { this.toast('დასაფქვავი ხორბალი არ არის.', 'bad'); return; }
+          if (!this.spendEnergy(RULES.energy.mill)) return;
+          this.inv.wheat -= 1;
+          this.inv.localFlour += 1;
+          this.floatText(365, 240, '+1 ადგილობრივი ფქვილი');
+        }
+
+        // ============================================================ Restaurant
+        buildRestaurant() {
+          const g = this.add.graphics();
+          const L = 610, R = 1180, T = 130, B = 700;
+
+          // floorboards
+          g.fillStyle(PAPER, 1); g.fillRect(L, T, R - L, B - T);
+          g.lineStyle(1, GREY, 1);
+          for (let y = T + 24; y < B; y += 24) g.lineBetween(L, y, R, y);
+
+          const walls = [
+            { x: L - 6, y: T - 6, w: R - L + 12, h: 10 },
+            { x: R - 4, y: T - 6, w: 10, h: B - T + 12 },
+            { x: L - 6, y: T - 6, w: 10, h: 336 - T },
+            { x: L - 6, y: 500, w: 10, h: B - 500 + 6 },
+            { x: L - 6, y: B - 4, w: 270, h: 10 },
+            { x: 940, y: B - 4, w: R - 940 + 6, h: 10 }
+          ];
+          walls.forEach((r) => { sketchRect(g, r.x, r.y, r.w, r.h, INK, 2); this.solids.push(r); });
+          text(this, 910, 716, 'შესასვლელი', 11, C.muted).setOrigin(0.5);
+          this.openSign = text(this, 910, 682, '', 12, C.paper, { fontStyle: 'bold', padding: { x: 8, y: 3 } }).setOrigin(0.5).setDepth(50);
+
+          // kitchen counter
+          sketchRect(g, L + 10, T + 14, R - L - 20, 56, PAPER, 4);
+          text(this, L + 20, T + 22, 'სამზარეულო', 11, C.muted, { fontStyle: 'bold' });
+          this.solids.push({ x: L + 10, y: T + 14, w: R - L - 20, h: 56 });
+
+          // stove
+          sketchRect(g, 725, T + 20, 70, 44, GREY, 3);
+          sketchCircle(g, 743, T + 42, 9, PAPER, 2); sketchCircle(g, 777, T + 42, 9, PAPER, 2);
+          g.fillStyle(INK, 1); g.fillCircle(743, T + 42, 3); g.fillCircle(777, T + 42, 3);
+          text(this, 760, T + 78, 'ქურა', 12, C.muted, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.interactables.push({
+            x: 760, y: T + 92, r: 50, kind: 'stove',
+            label: () => this.stoveLabel(),
+            action: () => this.cook()
+          });
+
+          // fridge + shelf
+          sketchRect(g, 820, T + 18, 46, 48, PAPER, 3);
+          this.add.image(843, T + 42, 'meat').setScale(0.7);
+          text(this, 843, T + 78, 'ხორცი ∞', 12, C.muted, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.add.image(930, T + 42, 'sack').setScale(0.7);
+          this.add.image(965, T + 42, 'sackImport').setScale(0.7);
+          this.add.image(1050, T + 42, 'plate').setScale(0.8);
+          text(this, 1080, T + 42, '→ სტუმარი', 12, C.muted).setOrigin(0, 0.5);
+
+          // tables
+          const cols = [720, 890, 1060];
+          const rows = [330, 500];
+          rows.forEach((ty) => cols.forEach((tx) => {
+            this.drawTable(g, tx, ty);
+            this.tables.push({ x: tx, y: ty, occupied: false });
+            this.solids.push({ x: tx - 48, y: ty - 28, w: 96, h: 56 });
+          }));
+        }
+
+        drawTable(g, x, y) {
+          sketchRect(g, x - 60, y - 8, 14, 18, GREY, 2);
+          sketchRect(g, x + 46, y - 8, 14, 18, GREY, 2);
+          sketchRect(g, x - 48, y - 28, 96, 56, PAPER, 4);
+          sketchCircle(g, x, y, 13, PAPER, 2);
+        }
+
+        stoveLabel() {
+          if (this.inv.plates >= RULES.maxPlates) return 'ხელები სავსეა — ჯერ თეფშები მიართვი';
+          if (this.inv.localFlour + this.inv.importedFlour <= 0) return 'მომზადება — ფქვილი არ არის! დაფქვი ან იყიდე იმპორტული';
+          return 'ხინკლის მომზადება  (1 ფქვილი + ხორცი, -' + RULES.energy.cook + ' ენერგია)';
+        }
+
+        cook() {
+          if (this.inv.plates >= RULES.maxPlates) { this.toast('მხოლოდ ' + RULES.maxPlates + ' თეფშის ტარება შეგიძლია.', 'bad'); return; }
+          let source;
+          if (this.inv.localFlour > 0) source = 'local';
+          else if (this.inv.importedFlour > 0) source = 'imported';
+          else { this.toast('ფქვილი არ არის! დაფქვი ხორბალი ან იყიდე იმპორტული.', 'bad'); return; }
+          if (!this.spendEnergy(RULES.energy.cook)) return;
+          if (source === 'local') this.inv.localFlour -= 1; else this.inv.importedFlour -= 1;
+          this.inv.plates += 1;
+          this.plateSources.push(source);
+          this.floatText(760, 180, '+1 თეფში (' + (source === 'local' ? 'ადგილობრივი' : 'იმპორტული') + ' ფქვილი)');
+          this.refreshCarried();
+        }
+
+        eat() {
+          if (this.inv.plates <= 0) { this.toast('საჭმელი თეფში არ გაქვს — ჯერ მოამზადე.', 'bad'); return; }
+          this.inv.plates -= 1;
+          this.plateSources.shift();
+          this.energy = Math.min(RULES.energyMax, this.energy + RULES.eatEnergy);
+          this.floatText(this.player.x, this.player.y - 60, '+' + RULES.eatEnergy + ' ენერგია');
+          this.refreshCarried();
+        }
+
+        refreshCarried() {
+          this.carried.forEach((img, i) => img.setVisible(i < this.inv.plates));
+        }
+
+        spawnCustomer(table) {
+          const body = this.add.graphics();
+          drawStick(body, Phaser.Utils.Array.GetRandom(HATS), nextSeed() * 10);
+
+          const bubble = this.add.graphics();
+          this.drawBubble(bubble, PAPER);
+          const bubbleIcon = this.add.image(0, -74, 'khinkali').setScale(0.55);
+          const barG = this.add.graphics();
+          sketchRect(barG, -23, 18, 46, 9, PAPER, 2);
+          const barFill = this.add.rectangle(-21, 22.5, 42, 5, INK).setOrigin(0, 0.5);
+
+          const container = this.add.container(910, 760, [bubble, bubbleIcon, body, barG, barFill]).setDepth(20);
+          const patience = Math.max(RULES.patienceMin, RULES.patienceStart - (this.day - 1) * RULES.patiencePerDay);
+          const customer = { table, container, bubble, bubbleIcon, barFill, body, patience, maxPatience: patience, seated: false, leaving: false };
+
+          table.occupied = true;
+          this.totals.arrived += 1;
+          this.dayStats.arrived += 1;
+          this.customers.push(customer);
+          this.interactables.push({
+            x: table.x, y: table.y - 55, r: 64, kind: 'customer', customer,
+            label: () => this.inv.plates > 0 ? 'ხინკლის მირთმევა' : 'სტუმარი ელოდება — თეფში არ გაქვს',
+            action: () => this.serveCustomer(customer)
+          });
+
+          this.tweens.chain({
+            targets: container,
+            tweens: [
+              { y: 640, duration: 350, ease: 'Sine.easeOut' },
+              { x: table.x, y: table.y - 55, duration: 800, ease: 'Sine.easeInOut' }
+            ],
+            onComplete: () => { customer.seated = true; }
+          });
+        }
+
+        drawBubble(g, fill) {
+          g.clear();
+          sketchPoly(g, [{ x: -24, y: -92 }, { x: 24, y: -92 }, { x: 24, y: -56 }, { x: 6, y: -56 }, { x: 0, y: -49 }, { x: -6, y: -56 }, { x: -24, y: -56 }], 77, fill, 3);
+        }
+
+        updateCustomers(delta) {
+          this.customers.forEach((c) => {
+            if (!c.seated || c.leaving) return;
+            c.patience -= delta;
+            const frac = Phaser.Math.Clamp(c.patience / c.maxPatience, 0, 1);
+            c.barFill.scaleX = frac;
+            if (frac <= 0.25) {
+              c.barFill.setAlpha(Math.sin(this.time.now / 80) > 0 ? 1 : 0.2);
+              if (!c.shaking) {
+                c.shaking = true;
+                this.tweens.add({ targets: c.body, x: 2, duration: 80, yoyo: true, repeat: -1 });
+              }
+            }
+            if (c.patience <= 0) this.leaveAngry(c);
+          });
+        }
+
+        serveCustomer(c) {
+          if (!c.seated || c.leaving) return;
+          if (this.inv.plates <= 0) { this.toast('თეფში არ გაქვს — ჯერ ქურაზე მოამზადე.', 'bad'); return; }
+          this.inv.plates -= 1;
+          const source = this.plateSources.shift() || 'local';
+          this.refreshCarried();
+
+          c.leaving = true;
+          this.tweens.killTweensOf(c.body); c.body.x = 0;
+          this.money += RULES.khinkaliPrice;
+          this.reputation = Phaser.Math.Clamp(this.reputation + RULES.repGain, 0, 100);
+          this.totals.served += 1; this.dayStats.served += 1;
+          this.totals.revenue += RULES.khinkaliPrice; this.dayStats.revenue += RULES.khinkaliPrice;
+          if (source === 'local') { this.totals.servedLocal += 1; this.dayStats.servedLocal += 1; }
+          else { this.totals.servedImported += 1; this.dayStats.servedImported += 1; }
+
+          this.drawBubble(c.bubble, GREY_LIGHT);
+          c.bubbleIcon.setTexture('plate').setScale(0.7);
+          c.barFill.setAlpha(1); c.barFill.scaleX = 1;
+          this.floatText(c.container.x, c.container.y - 100, '+$' + RULES.khinkaliPrice);
+          this.time.delayedCall(900, () => { if (!this.over && c.container.active) this.customerExit(c, 0.9); });
+        }
+
+        leaveAngry(c) {
+          c.leaving = true;
+          this.tweens.killTweensOf(c.body); c.body.x = 0;
+          this.drawBubble(c.bubble, INK);
+          c.bubbleIcon.setVisible(false);
+          c.container.add(text(this, 0, -75, '!', 28, C.paper, { fontStyle: 'bold' }).setOrigin(0.5));
+          this.reputation = Phaser.Math.Clamp(this.reputation - RULES.repLoss, 0, 100);
+          this.totals.angry += 1; this.dayStats.angry += 1;
+          this.cameras.main.shake(150, 0.004);
+          this.floatText(c.container.x, c.container.y - 100, '-' + RULES.repLoss + '% რეპუტაცია');
+          this.toast('სტუმარი გაბრაზებული წავიდა. რეპუტაცია -' + RULES.repLoss + '%.', 'bad');
+          this.customerExit(c, 0.6);
+          if (this.reputation <= 0) this.triggerGameOver();
+        }
+
+        customerExit(c, alpha) {
+          c.table.occupied = false;
+          this.interactables = this.interactables.filter((it) => it.customer !== c);
+          this.tweens.chain({
+            targets: c.container,
+            tweens: [
+              { x: 910, y: 640, alpha, duration: 700, ease: 'Sine.easeIn' },
+              { y: 770, duration: 350 }
+            ],
+            onComplete: () => this.removeCustomer(c)
+          });
+        }
+
+        removeCustomer(c) {
+          const i = this.customers.indexOf(c);
+          if (i >= 0) this.customers.splice(i, 1);
+          c.container.destroy();
+        }
+
+        updateSpawning(delta) {
+          if (!this.isOpen()) return;
+          this.spawnTimer -= delta;
+          if (this.spawnTimer > 0) return;
+          const table = this.tables.find((t) => !t.occupied);
+          if (!table) { this.spawnTimer = 700; return; }
+          this.spawnCustomer(table);
+          this.spawnTimer = Math.max(RULES.spawnMin, RULES.spawnStart - (this.day - 1) * RULES.spawnPerDay);
+        }
+
+        isOpen() {
+          return this.timeMin >= RULES.openAt && this.timeMin < RULES.closeAt;
+        }
+
+        // ================================================================ Player
+        createPlayer() {
+          const g = this.add.graphics();
+          drawStick(g, 'cowboy', 5000);
+          this.playerBody = g;
+
+          this.carried = [];
+          for (let i = 0; i < RULES.maxPlates; i += 1) {
+            this.carried.push(this.add.image(-14 + i * 14, -74, 'plate').setScale(0.5).setVisible(false));
+          }
+          this.player = this.add.container(470, 640, [g, ...this.carried]).setDepth(100);
+          this.plateSources = [];
+
+          this.prompt = text(this, 0, 0, '', 14, C.paper, {
+            backgroundColor: '#111111', padding: { x: 8, y: 4 }
+          }).setOrigin(0.5, 1).setDepth(101).setVisible(false);
+
+          this.highlight = this.add.graphics().setDepth(15);
+          this.walkT = 0;
+        }
+
+        playerBox() {
+          return { x: this.player.x - 11, y: this.player.y + 4, w: 22, h: 16 };
+        }
+
+        blocked(box) {
+          if (box.x < 4 || box.x + box.w > W - 4 || box.y < 130 || box.y + box.h > H - 4) return true;
+          return this.solids.some((s) => rectsOverlap(box, s));
+        }
+
+        updatePlayer(delta) {
+          const k = this.keys;
+          let dx = (k.D.isDown || k.RIGHT.isDown ? 1 : 0) - (k.A.isDown || k.LEFT.isDown ? 1 : 0);
+          let dy = (k.S.isDown || k.DOWN.isDown ? 1 : 0) - (k.W.isDown || k.UP.isDown ? 1 : 0);
+          if (dx !== 0 && dy !== 0) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+          const speed = RULES.playerSpeed * (this.energy <= 0 ? 0.55 : 1) * delta / 1000;
+
+          if (dx !== 0) {
+            this.player.x += dx * speed;
+            if (this.blocked(this.playerBox())) this.player.x -= dx * speed;
+          }
+          if (dy !== 0) {
+            this.player.y += dy * speed;
+            if (this.blocked(this.playerBox())) this.player.y -= dy * speed;
+          }
+
+          const moving = dx !== 0 || dy !== 0;
+          this.walkT += moving ? delta : 0;
+          this.playerBody.y = moving ? Math.sin(this.walkT / 70) * 2 : 0;
+          if (dx !== 0) this.playerBody.scaleX = dx > 0 ? 1 : -1;
+        }
+
+        nearestInteractable() {
+          let best = null, bestD = Infinity;
+          this.interactables.forEach((it) => {
+            if (it.kind === 'customer' && (!it.customer.seated || it.customer.leaving)) return;
+            const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, it.x, it.y);
+            if (d <= it.r && d < bestD) { best = it; bestD = d; }
+          });
+          return best;
+        }
+
+        updatePrompt() {
+          const it = this.nearestInteractable();
+          this.highlight.clear();
+          this.current = it;
+          if (!it) { this.prompt.setVisible(false); return; }
+          this.prompt.setText('[E] ' + it.label());
+          this.prompt.setPosition(this.player.x, this.player.y - 60 - (this.inv.plates > 0 ? 26 : 0)).setVisible(true);
+          const pulse = 1 + Math.sin(this.time.now / 150) * 0.08;
+          sketchCircle(this.highlight, it.x, it.y, 24 * pulse, undefined, 3, 9);
+        }
+
+        spendEnergy(amount) {
+          if (this.energy <= 0) {
+            this.toast('გამოიფიტე! შეჭამე ხინკალი (Q) ან წადი დასაძინებლად.', 'bad');
+            return false;
+          }
+          this.energy = Math.max(0, this.energy - amount);
+          if (this.energy === 0) this.toast('ენერგია დაგიმთავრდა. შეჭამე (Q) ან დაიძინე.', 'bad');
+          return true;
+        }
+
+        // ================================================================ Market
+        createMarketPanel() {
+          const p = this.add.container(W / 2, H / 2).setDepth(2000).setVisible(false);
+          const bg = this.add.rectangle(0, 0, W, H, INK, 0.5).setOrigin(0.5);
+          const card = this.add.graphics();
+          sketchRect(card, -260, -190, 520, 380, PAPER, 4);
+          const title = text(this, 0, -160, 'იმპორტის ბაზარი', 28, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.marketNews = text(this, 0, -122, '', 14, C.muted, { align: 'center', wordWrap: { width: 460 } }).setOrigin(0.5);
+          this.marketMoney = text(this, 0, -86, '', 15, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+
+          this.buyFlourBtn = makeButton(this, 0, -30, 400, 58, 'იმპორტული ფქვილი', 'ფასი', () => this.buyFlour());
+          this.buySeedBtn = makeButton(this, 0, 40, 400, 58, 'ხორბლის თესლი ×' + RULES.seedPackSize, '$' + RULES.seedPackPrice + ' · შენი ნაკვეთებისთვის', () => this.buySeeds());
+          const close = makeButton(this, 0, 120, 200, 48, 'დახურვა  [Esc]', null, () => this.closeMarket());
+          const note = text(this, 0, 165, 'იმპორტული ფქვილი სტუმრებს აჭმევს — მაგრამ საქართველო ხორბლის 80%-ს უკვე იმპორტით იღებს.', 12, C.muted, { align: 'center', wordWrap: { width: 460 } }).setOrigin(0.5);
+
+          p.add([bg, card, title, this.marketNews, this.marketMoney, this.buyFlourBtn, this.buySeedBtn, close, note]);
+          this.marketPanel = p;
+        }
+
+        openMarket() {
+          this.marketOpen = true;
+          this.marketPanel.setVisible(true);
+          this.prompt.setVisible(false);
+          this.highlight.clear();
+          this.refreshMarket();
+        }
+
+        closeMarket() {
+          this.marketOpen = false;
+          this.marketPanel.setVisible(false);
+        }
+
+        refreshMarket() {
+          this.marketNews.setText(this.news);
+          this.marketMoney.setText('გაქვს $' + this.money + '   ·   იმპორტული ფქვილი მარაგში: ' + this.inv.importedFlour);
+          this.buyFlourBtn.list[1].setText('იმპორტული ფქვილი ×1  —  $' + this.importPrice);
+          this.buyFlourBtn.list[2].setText('ხინკლად იყიდება $' + RULES.khinkaliPrice + '-ად → მოგება $' + (RULES.khinkaliPrice - this.importPrice));
+          this.buyFlourBtn.setEnabled(this.money >= this.importPrice);
+          this.buySeedBtn.setEnabled(this.money >= RULES.seedPackPrice);
+        }
+
+        buyFlour() {
+          if (this.money < this.importPrice) return;
+          this.money -= this.importPrice;
+          this.inv.importedFlour += 1;
+          this.totals.imported += 1; this.dayStats.imported += 1;
+          this.totals.importSpend += this.importPrice; this.dayStats.importSpend += this.importPrice;
+          this.refreshMarket();
+        }
+
+        buySeeds() {
+          if (this.money < RULES.seedPackPrice) return;
+          this.money -= RULES.seedPackPrice;
+          this.inv.seeds += RULES.seedPackSize;
+          this.refreshMarket();
+        }
+
+        // ============================================================== Day cycle
+        startDay(first) {
+          this.day += 1;
+          this.timeMin = RULES.dayStart;
+          this.energy = this.collapsed ? Math.round(RULES.energyMax * 0.6) : RULES.energyMax;
+          this.collapsed = false;
+          this.spawnTimer = 3000;
+          this.dayStats = { arrived: 0, served: 0, servedLocal: 0, servedImported: 0, angry: 0, harvested: 0, imported: 0, importSpend: 0, revenue: 0 };
+
+          if (!first) {
+            this.plots.forEach((p) => {
+              if (p.state === 'growing' && p.watered) {
+                p.stage += 1;
+                if (p.stage >= RULES.matureStage) p.state = 'mature';
+              }
+              p.watered = false;
+              this.drawPlot(p);
+            });
+          }
+
+          let r = Math.random(), pick = NEWS[0];
+          for (const n of NEWS) { if (r < n.w) { pick = n; break; } r -= n.w; }
+          this.importPrice = Math.round(RULES.importBase * pick.p);
+          this.news = pick.text + ' (ფქვილი $' + this.importPrice + ')';
+
+          this.paused = false;
+          this.toast(first
+            ? 'დღე 1. გადათოხნე, დათესე და მორწყე ნაკვეთები, სანამ სახინკლე 10:00-ზე გაიხსნება.'
+            : 'დღე ' + this.day + '. ' + this.news);
+          this.updateHud();
+        }
+
+        endDay(reason) {
+          if (this.over || this.paused) return;
+          this.paused = true;
+          this.closeMarket();
+          this.collapsed = reason === 'collapse';
+
+          this.customers.slice().forEach((c) => { c.table.occupied = false; this.removeCustomer(c); });
+          this.interactables = this.interactables.filter((it) => it.kind !== 'customer');
+          this.prompt.setVisible(false);
+          this.highlight.clear();
+
+          const s = this.dayStats;
+          const localPct = s.arrived > 0 ? Math.round((s.servedLocal / s.arrived) * 100) : 0;
+          const unwatered = this.plots.filter((p) => p.state === 'growing' && !p.watered).length;
+          this.dayTitle.setText(reason === 'collapse' ? 'შუაღამე — დაღლილობისგან დაეცი' : 'დღე ' + this.day + ' დასრულდა');
+          this.dayLines.setText([
+            'სტუმრები: ' + s.arrived + ' მოვიდა · ' + s.served + ' მოემსახურე · ' + s.angry + ' გაბრაზებული წავიდა',
+            'შემოსავალი: +$' + s.revenue + '     იმპორტი: -$' + s.importSpend + ' (' + s.imported + ' ტომარა)',
+            'აღებული ხორბალი: ' + s.harvested + '     ადგილობრივმა ფქვილმა დღევანდელი მოთხოვნის ' + localPct + '% დაფარა',
+            'რეპუტაცია: ' + Math.round(this.reputation) + '%     ფული: $' + this.money,
+            unwatered > 0 ? '! ' + unwatered + ' ნაკვეთი არ მოირწყა და ამაღამ არ გაიზრდება.' : 'ყველა დათესილი ნაკვეთი მოირწყა — ამაღამ გაიზრდება.',
+            reason === 'collapse' ? '! ხვალ მხოლოდ 60% ენერგიით დაიწყებ.' : ''
+          ].join('\n'));
+          this.dayOverlay.setVisible(true);
+        }
+
+        createDayOverlay() {
+          const p = this.add.container(W / 2, H / 2).setDepth(2100).setVisible(false);
+          const bg = this.add.rectangle(0, 0, W, H, INK, 0.75).setOrigin(0.5);
+          const card = this.add.graphics();
+          sketchRect(card, -330, -200, 660, 400, PAPER, 4);
+          this.dayTitle = text(this, 0, -160, '', 28, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          this.dayLines = text(this, 0, -30, '', 15, C.ink, { align: 'center', lineSpacing: 10, wordWrap: { width: 600 } }).setOrigin(0.5);
+          const btn = makeButton(this, 0, 140, 260, 56, 'შემდეგი დღე  [Enter]', null, () => this.nextDay());
+          p.add([bg, card, this.dayTitle, this.dayLines, btn]);
+          this.dayOverlay = p;
+        }
+
+        nextDay() {
+          if (!this.dayOverlay.visible) return;
+          this.dayOverlay.setVisible(false);
+          this.cameras.main.fadeIn(500);
+          this.startDay(false);
+        }
+
+        // ================================================================== HUD
+        createHud() {
+          const g = this.add.graphics().setDepth(200);
+          g.fillStyle(PAPER, 1); g.fillRect(0, 0, W, 70);
+          sketchLine(g, 0, 70, W, 70, 4);
+
+          const D = 201;
+          this.dayText = text(this, 16, 8, '', 20, C.ink, { fontStyle: 'bold' }).setDepth(D);
+          this.openText = text(this, 16, 40, '', 13, C.muted, { fontStyle: 'bold' }).setDepth(D);
+
+          this.add.image(230, 21, 'coin').setDepth(D);
+          this.moneyText = text(this, 246, 8, '', 20, C.ink, { fontStyle: 'bold' }).setDepth(D);
+
+          this.add.image(232, 50, 'bolt').setScale(0.7).setDepth(D);
+          this.energyFill = makeBar(this, 246, 50, 120, 12, D);
+          this.energyText = text(this, 372, 50, '', 11, C.muted).setOrigin(0, 0.5).setDepth(D);
+
+          text(this, 440, 21, 'რეპუტაცია', 12, C.muted).setOrigin(0, 0.5).setDepth(D);
+          this.repFill = makeBar(this, 520, 21, 150, 14, D);
+          this.repText = text(this, 678, 21, '', 13, C.ink, { fontStyle: 'bold' }).setOrigin(0, 0.5).setDepth(D);
+
+          const inv = [['seed', 'seeds', 'თესლი'], ['wheat', 'wheat', 'ხორბალი'], ['sack', 'localFlour', 'ადგილ. ფქვილი'], ['sackImport', 'importedFlour', 'იმპორტული']];
+          this.invTexts = {};
+          inv.forEach(([tex, key, label], i) => {
+            const x = 760 + i * 90;
+            this.add.image(x, 30, tex).setScale(0.75).setDepth(D);
+            this.invTexts[key] = text(this, x + 18, 30, '', 18, C.ink, { fontStyle: 'bold' }).setOrigin(0, 0.5).setDepth(D);
+            text(this, x - 12, 56, label, 10, C.muted).setOrigin(0, 0.5).setDepth(D);
+          });
+
+          text(this, 1188, 21, LOCAL_CAP_PERCENT + '% ლიმიტი', 11, C.paper, {
+            fontStyle: 'bold', backgroundColor: '#111111', padding: { x: 6, y: 3 }
+          }).setOrigin(1, 0.5).setDepth(D);
+
+          this.toastText = text(this, W / 2, 92, '', 14, C.ink, { backgroundColor: '#ffffff', padding: { x: 14, y: 6 } })
+            .setOrigin(0.5).setDepth(210);
+        }
+
+        updateHud() {
+          this.dayText.setText('დღე ' + this.day + '  ·  ' + clock(this.timeMin));
+          const open = this.isOpen();
+          this.openText.setText(open ? 'სახინკლე ღიაა 21:00-მდე' : this.timeMin < RULES.openAt ? 'სახინკლე იხსნება 10:00-ზე' : 'სახინკლე დაკეტილია — წადი დასაძინებლად');
+          this.openSign.setText(open ? 'ღიაა' : 'დაკეტილია').setBackgroundColor(open ? '#111111' : '#7a7a7a');
+
+          this.moneyText.setText('$' + this.money);
+          this.energyFill.scaleX = this.energy / RULES.energyMax;
+          this.energyFill.setAlpha(this.energy <= 20 && Math.sin(this.time.now / 120) > 0 ? 0.3 : 1);
+          this.energyText.setText(Math.round(this.energy) + ' ენერგია');
+
+          const rep = Phaser.Math.Clamp(this.reputation, 0, 100);
+          this.repFill.scaleX = rep / 100;
+          this.repFill.setAlpha(rep <= 25 && Math.sin(this.time.now / 120) > 0 ? 0.3 : 1);
+          this.repText.setText(Math.round(rep) + '%');
+
+          Object.keys(this.invTexts).forEach((k) => {
+            this.invTexts[k].setText(k === 'plates' ? this.inv.plates + '/' + RULES.maxPlates : String(this.inv[k]));
+          });
+        }
+
+        localShare() {
+          const total = this.totals.harvested + this.totals.imported;
+          return total === 0 ? 100 : Math.round((this.totals.harvested / total) * 100);
+        }
+
+        toast(msg, kind) {
+          const bad = kind === 'bad';
+          this.toastText.setText(msg).setColor(bad ? C.paper : C.ink).setBackgroundColor(bad ? '#111111' : '#ffffff').setAlpha(1);
+          this.tweens.killTweensOf(this.toastText);
+          this.tweens.add({ targets: this.toastText, alpha: 0, delay: 3200, duration: 600 });
+        }
+
+        floatText(x, y, str) {
+          const t = text(this, x, y, str, 15, C.ink, { fontStyle: 'bold', backgroundColor: '#ffffff', padding: { x: 4, y: 1 } }).setOrigin(0.5).setDepth(150);
+          this.tweens.add({ targets: t, y: y - 36, alpha: 0, duration: 1100, ease: 'Quad.easeOut', onComplete: () => t.destroy() });
+        }
+
+        // ================================================================= Loop
+        update(_time, delta) {
+          if (this.over) return;
+          const K = Phaser.Input.Keyboard;
+
+          if (this.dayOverlay.visible) {
+            if (K.JustDown(this.keys.ENTER) || K.JustDown(this.keys.E)) this.nextDay();
+            return;
+          }
+          if (this.marketOpen) {
+            if (K.JustDown(this.keys.ESC) || K.JustDown(this.keys.E)) this.closeMarket();
+            this.updateHud();
+            return;
+          }
+          if (this.paused) return;
+
+          this.timeMin += RULES.minutesPerSecond * delta / 1000;
+          if (this.timeMin >= RULES.dayEnd) { this.endDay('collapse'); return; }
+
+          this.updatePlayer(delta);
+          this.updatePrompt();
+          this.updateCustomers(delta);
+          this.updateSpawning(delta);
+
+          if ((K.JustDown(this.keys.E) || K.JustDown(this.keys.SPACE)) && this.current) this.current.action();
+          if (K.JustDown(this.keys.Q)) this.eat();
+
+          this.updateHud();
+        }
+
+        triggerGameOver() {
+          if (this.over) return;
+          this.over = true;
+          this.input.keyboard.removeAllListeners();
+          const summary = { day: this.day, money: this.money, totals: Object.assign({}, this.totals) };
+          this.cameras.main.fadeOut(700, 255, 255, 255);
+          this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start('GameOver', summary));
+        }
+      }
+
+      // =====================================================================
+      //  Game over scene: the educational payoff
+      // =====================================================================
+      class GameOverScene extends Phaser.Scene {
+        constructor() { super('GameOver'); }
+
+        create(data) {
+          const s = data.totals;
+          this.cameras.main.setBackgroundColor(PAPER);
+          this.cameras.main.fadeIn(400);
+          stipple(this.add.graphics(), 0, 0, W, H, 700);
+          panel(this, 170, 60, 860, 640);
+
+          text(this, W / 2, 118, 'თამაში დასრულდა', 42, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          const message = 'თამაში დასრულდა! ადგილობრივი ხორბალი შენი ხინკლის მოთხოვნის მხოლოდ ' + LOCAL_CAP_PERCENT +
+            '%-ს ჰყოფნიდა. საქართველო ყოველდღიური საჭიროებისთვის ხორბლის 80%-ზე მეტს იმპორტით იღებს.';
+          text(this, W / 2, 200, message, 20, C.ink, { align: 'center', wordWrap: { width: 740 } }).setOrigin(0.5);
+
+          const localCoverage = s.arrived > 0 ? Math.round((s.servedLocal / s.arrived) * 100) : 0;
+          const totalFlour = s.harvested + s.imported;
+          const localShare = totalFlour > 0 ? Math.round((s.harvested / totalFlour) * 100) : 100;
+
+          panel(this, 230, 262, 740, 258, GREY_LIGHT);
+          text(this, W / 2, 282, 'შენი ფერმა და სახინკლე', 13, C.muted, { fontStyle: 'bold' }).setOrigin(0.5);
+          const stats = [
+            ['გადარჩენილი დღეები', data.day],
+            ['მოსული სტუმრები', s.arrived],
+            ['მომსახურებული', s.served + '  (' + s.servedLocal + ' ადგილობრივი, ' + s.servedImported + ' იმპორტული)'],
+            ['გაბრაზებული წავიდა', s.angry],
+            ['მოყვანილი ხორბალი', s.harvested],
+            ['ნაყიდი იმპორტული ტომრები', s.imported + '  ($' + s.importSpend + ')'],
+            ['შემოსავალი / საბოლოო ფული', '$' + s.revenue + ' / $' + data.money],
+            ['ადგილობრივმა ხორბალმა დაფარა', localCoverage + '% მოთხოვნისა'],
+            ['ადგილობრივის წილი მთელ ფქვილში', localShare + '%']
+          ];
+          stats.forEach(([label, value], i) => {
+            const y = 300 + i * 24;
+            text(this, 270, y, label, 14, C.muted);
+            text(this, 600, y, String(value), 14, C.ink, { fontStyle: 'bold' });
+          });
+
+          const takeaway = 'შენი ' + RULES.plots + ' ნაკვეთი ვერასდროს დაეწეოდა მოთხოვნას — ისევე, როგორც საქართველოში, სადაც ' +
+            'მოხმარებული ხორბლის დაახლოებით მეხუთედი მოჰყავთ. დანარჩენი იმპორტია, ძირითადად ერთი მეზობელი მომწოდებლისგან, ' +
+            'ამიტომ პურისა და ხინკლის ფასი უცხოურ მოსავალს, ექსპორტის აკრძალვებსა და ვალუტის კურსს მიჰყვება.';
+          text(this, W / 2, 570, takeaway, 14, C.muted, { align: 'center', wordWrap: { width: 720 }, lineSpacing: 4 }).setOrigin(0.5);
+
+          makeButton(this, W / 2, 650, 240, 56, 'თავიდან დაწყება', null, () => this.scene.start('MainGame'));
+          this.input.keyboard.once('keydown-ENTER', () => this.scene.start('MainGame'));
+        }
+      }
+
+      const startGame = () => new Phaser.Game({
+        type: Phaser.AUTO,
+        parent: 'game',
+        width: W,
+        height: H,
+        backgroundColor: '#ffffff',
+        scene: [BootScene, MainGameScene, GameOverScene],
+        scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH }
+      });
+
+      // Wait (briefly) for the Georgian web font so canvas text uses it from the first frame.
+      const fontReady = document.fonts ? document.fonts.load('16px "Noto Sans Georgian"').catch(() => null) : Promise.resolve();
+      Promise.race([fontReady, new Promise((r) => setTimeout(r, 2500))]).then(startGame);
+    </script>
   </body>
 </html>
