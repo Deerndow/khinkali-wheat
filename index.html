@@ -107,7 +107,7 @@
       let seedCounter = 1;
       function nextSeed() { seedCounter += 1; return seedCounter; }
 
-      function sketchPoly(g, pts, seed, fill, lw = 3, closed = true, stroke = INK) {
+      function sketchPoly(g, pts, seed, fill, lw = 3, closed = true, stroke = INK, jitter = 1.4) {
         const rnd = new Phaser.Math.RandomDataGenerator([String(seed)]);
         const out = [];
         const n = pts.length;
@@ -119,8 +119,8 @@
           for (let s = 0; s < segs; s += 1) {
             const t = s / segs;
             out.push({
-              x: a.x + (b.x - a.x) * t + rnd.realInRange(-1.4, 1.4),
-              y: a.y + (b.y - a.y) * t + rnd.realInRange(-1.4, 1.4)
+              x: a.x + (b.x - a.x) * t + rnd.realInRange(-jitter, jitter),
+              y: a.y + (b.y - a.y) * t + rnd.realInRange(-jitter, jitter)
             });
           }
         }
@@ -133,14 +133,62 @@
         sketchPoly(g, [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }], seed, fill, lw);
       }
 
-      function sketchCircle(g, cx, cy, r, fill, lw = 3, seed = nextSeed()) {
+      function sketchEllipse(g, cx, cy, rx, ry, fill, lw = 3, seed = nextSeed()) {
         const pts = [];
-        const n = Math.max(10, Math.round(r * 1.2));
+        const n = Math.max(10, Math.round(Math.max(rx, ry) * 1.2));
         for (let i = 0; i < n; i += 1) {
           const a = (i / n) * Math.PI * 2;
-          pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+          pts.push({ x: cx + Math.cos(a) * rx, y: cy + Math.sin(a) * ry });
         }
         sketchPoly(g, pts, seed, fill, lw);
+      }
+
+      function sketchCircle(g, cx, cy, r, fill, lw = 3, seed = nextSeed()) {
+        sketchEllipse(g, cx, cy, r, r, fill, lw, seed);
+      }
+
+      // Catmull-Rom through closed control points, resampled every `step` px.
+      function smoothClosed(pts, step) {
+        const out = [];
+        const n = pts.length;
+        const cr = (a, b, c, d, t) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (3 * b - a - 3 * c + d) * t * t * t);
+        for (let i = 0; i < n; i += 1) {
+          const p0 = pts[(i + n - 1) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+          const k = Math.max(1, Math.round(Math.hypot(p2.x - p1.x, p2.y - p1.y) / step));
+          for (let j = 0; j < k; j += 1) {
+            const t = j / k;
+            out.push({ x: cr(p0.x, p1.x, p2.x, p3.x, t), y: cr(p0.y, p1.y, p2.y, p3.y, t) });
+          }
+        }
+        return out;
+      }
+
+      // A khinkali: flat-bottomed, pot-bellied dumpling whose pleats twist up into a knob.
+      // (cx, by) is the middle of its base; at s = 1 it is 40px wide and 44px tall.
+      function drawKhinkali(g, cx, by, s, seed, lw = 3) {
+        const P = (x, y) => ({ x: cx + x * s, y: by + y * s });
+        const jitter = Math.max(0.5, 1.2 * s);
+        const outline = [
+          [0, -43], [2.5, -41.5], [3.5, -37.5], [5, -33], [10, -29], [16, -24], [19.5, -16], [20.5, -8], [18, -2], [10, 0],
+          [-10, 0], [-18, -2], [-20.5, -8], [-19.5, -16], [-16, -24], [-10, -29], [-5, -33], [-3.5, -37.5], [-2.5, -41.5]
+        ].map(([x, y]) => P(x, y));
+        sketchPoly(g, smoothClosed(outline, 5 * s), seed, PAPER, lw, true, INK, jitter);
+
+        // Pleats fan out from the pinched neck and swirl down to the smooth belly.
+        const pleatW = Math.max(1, lw * 0.6);
+        for (let i = -3; i <= 3; i += 1) {
+          const ex = i * 5.6, ey = -7 - (i * i) * 0.7;
+          const sx = i * 1.1, sy = -32;
+          const qx = (sx + ex) / 2 + 3.5, qy = (sy + ey) / 2 - 2;
+          const pts = [];
+          for (let k = 0; k <= 5; k += 1) {
+            const t = k / 5, u = 1 - t;
+            pts.push(P(u * u * sx + 2 * u * t * qx + t * t * ex, u * u * sy + 2 * u * t * qy + t * t * ey));
+          }
+          sketchPoly(g, pts, seed + 10 + i, undefined, pleatW, false, INK, jitter * 0.6);
+        }
+        // A twist line across the knob
+        sketchPoly(g, [P(-3.5, -35.5), P(3, -39.5)], seed + 20, undefined, pleatW, false, INK, jitter * 0.5);
       }
 
       function sketchLine(g, x1, y1, x2, y2, lw = 3, seed = nextSeed()) {
@@ -220,6 +268,11 @@
         return scene.add.rectangle(x + 2, y, w - 4, h - 4, INK).setOrigin(0, 0.5).setDepth(depth);
       }
 
+      // Georgian style: the lari sign goes after the amount (10₾).
+      function lari(amount) {
+        return amount + '₾';
+      }
+
       function clock(minutes) {
         const m = Math.floor(minutes);
         return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
@@ -287,16 +340,15 @@
           const g = this.make.graphics({ x: 0, y: 0, add: false });
 
           // Khinkali dumpling
-          sketchCircle(g, 24, 34, 18, PAPER, 3, 101);
-          for (let i = -3; i <= 3; i += 1) sketchLine(g, 24, 18, 24 + i * 5.5, 38, 2, 110 + i);
-          sketchCircle(g, 24, 12, 7, PAPER, 3, 102);
+          drawKhinkali(g, 24, 50, 1, 101, 3);
           g.generateTexture('khinkali', 48, 54); g.clear();
 
-          // Plate of khinkali
-          sketchCircle(g, 20, 20, 18, PAPER, 2, 103);
-          sketchCircle(g, 20, 23, 10, PAPER, 2, 104);
-          sketchCircle(g, 20, 12, 4, PAPER, 2, 105);
-          g.generateTexture('plate', 40, 40); g.clear();
+          // Plate of khinkali: two behind, one in front
+          sketchEllipse(g, 24, 34, 22, 6.5, PAPER, 2.5, 103);
+          drawKhinkali(g, 12, 32, 0.5, 104, 2);
+          drawKhinkali(g, 36, 32, 0.5, 105, 2);
+          drawKhinkali(g, 24, 37, 0.66, 106, 2.5);
+          g.generateTexture('plate', 48, 44); g.clear();
 
           // Local flour sack (white) and imported sack (grey, stamped)
           sketchRect(g, 3, 12, 30, 26, PAPER, 3, 106);
@@ -335,7 +387,16 @@
           g.fillStyle(INK, 1);
           g.fillTriangle(12, 0, 2, 14, 10, 14);
           g.fillTriangle(10, 10, 18, 10, 8, 24);
-          g.generateTexture('bolt', 20, 24);
+          g.generateTexture('bolt', 20, 24); g.clear();
+
+          // Reputation star
+          const star = [];
+          for (let i = 0; i < 10; i += 1) {
+            const a = -Math.PI / 2 + (i * Math.PI) / 5, r = i % 2 ? 4 : 9.5;
+            star.push({ x: 10 + Math.cos(a) * r, y: 10.5 + Math.sin(a) * r });
+          }
+          g.fillStyle(INK, 1); g.fillPoints(star, true);
+          g.generateTexture('star', 20, 20);
 
           g.destroy();
         }
@@ -491,7 +552,7 @@
           this.solids.push({ x: 40, y: 606, w: 200, h: 90 });
           this.interactables.push({
             x: 140, y: 590, r: 70, kind: 'truck',
-            label: () => 'იმპორტის ბაზარი  (ფქვილი $' + this.importPrice + ' · თესლი)',
+            label: () => 'იმპორტის ბაზარი  (ფქვილი ' + lari(this.importPrice) + ' · თესლი)',
             action: () => this.openMarket()
           });
 
@@ -772,7 +833,7 @@
           this.drawBubble(c.bubble, GREY_LIGHT);
           c.bubbleIcon.setTexture('plate').setScale(0.7);
           c.barFill.setAlpha(1); c.barFill.scaleX = 1;
-          this.floatText(c.container.x, c.container.y - 100, '+$' + RULES.khinkaliPrice);
+          this.floatText(c.container.x, c.container.y - 100, '+' + lari(RULES.khinkaliPrice));
           this.time.delayedCall(900, () => { if (!this.over && c.container.active) this.customerExit(c, 0.9); });
         }
 
@@ -832,7 +893,7 @@
 
           this.carried = [];
           for (let i = 0; i < RULES.maxPlates; i += 1) {
-            this.carried.push(this.add.image(-14 + i * 14, -74, 'plate').setScale(0.5).setVisible(false));
+            this.carried.push(this.add.image(-20 + i * 20, -72, 'plate').setScale(0.45).setVisible(false));
           }
           this.player = this.add.container(470, 640, [g, ...this.carried]).setDepth(100);
           this.plateSources = [];
@@ -918,7 +979,7 @@
           this.marketMoney = text(this, 0, -86, '', 15, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
 
           this.buyFlourBtn = makeButton(this, 0, -30, 400, 58, 'იმპორტული ფქვილი', 'ფასი', () => this.buyFlour());
-          this.buySeedBtn = makeButton(this, 0, 40, 400, 58, 'ხორბლის თესლი ×' + RULES.seedPackSize, '$' + RULES.seedPackPrice + ' · შენი ნაკვეთებისთვის', () => this.buySeeds());
+          this.buySeedBtn = makeButton(this, 0, 40, 400, 58, 'ხორბლის თესლი ×' + RULES.seedPackSize, lari(RULES.seedPackPrice) + ' · შენი ნაკვეთებისთვის', () => this.buySeeds());
           const close = makeButton(this, 0, 120, 200, 48, 'დახურვა  [Esc]', null, () => this.closeMarket());
           const note = text(this, 0, 165, 'იმპორტული ფქვილი სტუმრებს აჭმევს — მაგრამ საქართველო ხორბლის 80%-ს უკვე იმპორტით იღებს.', 12, C.muted, { align: 'center', wordWrap: { width: 460 } }).setOrigin(0.5);
 
@@ -941,9 +1002,9 @@
 
         refreshMarket() {
           this.marketNews.setText(this.news);
-          this.marketMoney.setText('გაქვს $' + this.money + '   ·   იმპორტული ფქვილი მარაგში: ' + this.inv.importedFlour);
-          this.buyFlourBtn.list[1].setText('იმპორტული ფქვილი ×1  —  $' + this.importPrice);
-          this.buyFlourBtn.list[2].setText('ხინკლად იყიდება $' + RULES.khinkaliPrice + '-ად → მოგება $' + (RULES.khinkaliPrice - this.importPrice));
+          this.marketMoney.setText('გაქვს ' + lari(this.money) + '   ·   იმპორტული ფქვილი მარაგში: ' + this.inv.importedFlour);
+          this.buyFlourBtn.list[1].setText('იმპორტული ფქვილი ×1  —  ' + lari(this.importPrice));
+          this.buyFlourBtn.list[2].setText('ხინკლად იყიდება ' + lari(RULES.khinkaliPrice) + '-ად → მოგება ' + lari(RULES.khinkaliPrice - this.importPrice));
           this.buyFlourBtn.setEnabled(this.money >= this.importPrice);
           this.buySeedBtn.setEnabled(this.money >= RULES.seedPackPrice);
         }
@@ -987,7 +1048,7 @@
           let r = Math.random(), pick = NEWS[0];
           for (const n of NEWS) { if (r < n.w) { pick = n; break; } r -= n.w; }
           this.importPrice = Math.round(RULES.importBase * pick.p);
-          this.news = pick.text + ' (ფქვილი $' + this.importPrice + ')';
+          this.news = pick.text + ' (ფქვილი ' + lari(this.importPrice) + ')';
 
           this.paused = false;
           this.toast(first
@@ -1013,9 +1074,9 @@
           this.dayTitle.setText(reason === 'collapse' ? 'შუაღამე — დაღლილობისგან დაეცი' : 'დღე ' + this.day + ' დასრულდა');
           this.dayLines.setText([
             'სტუმრები: ' + s.arrived + ' მოვიდა · ' + s.served + ' მოემსახურე · ' + s.angry + ' გაბრაზებული წავიდა',
-            'შემოსავალი: +$' + s.revenue + '     იმპორტი: -$' + s.importSpend + ' (' + s.imported + ' ტომარა)',
+            'შემოსავალი: +' + lari(s.revenue) + '     იმპორტი: -' + lari(s.importSpend) + ' (' + s.imported + ' ტომარა)',
             'აღებული ხორბალი: ' + s.harvested + '     ადგილობრივმა ფქვილმა დღევანდელი მოთხოვნის ' + localPct + '% დაფარა',
-            'რეპუტაცია: ' + Math.round(this.reputation) + '%     ფული: $' + this.money,
+            'რეპუტაცია: ' + Math.round(this.reputation) + '%     ფული: ' + lari(this.money),
             unwatered > 0 ? '! ' + unwatered + ' ნაკვეთი არ მოირწყა და ამაღამ არ გაიზრდება.' : 'ყველა დათესილი ნაკვეთი მოირწყა — ამაღამ გაიზრდება.',
             reason === 'collapse' ? '! ხვალ მხოლოდ 60% ენერგიით დაიწყებ.' : ''
           ].join('\n'));
@@ -1054,13 +1115,18 @@
           this.add.image(230, 21, 'coin').setDepth(D);
           this.moneyText = text(this, 246, 8, '', 20, C.ink, { fontStyle: 'bold' }).setDepth(D);
 
-          this.add.image(232, 50, 'bolt').setScale(0.7).setDepth(D);
-          this.energyFill = makeBar(this, 246, 50, 120, 12, D);
-          this.energyText = text(this, 372, 50, '', 11, C.muted).setOrigin(0, 0.5).setDepth(D);
-
-          text(this, 440, 21, 'რეპუტაცია', 12, C.muted).setOrigin(0, 0.5).setDepth(D);
-          this.repFill = makeBar(this, 520, 21, 150, 14, D);
-          this.repText = text(this, 678, 21, '', 13, C.ink, { fontStyle: 'bold' }).setOrigin(0, 0.5).setDepth(D);
+          // Reputation over energy, in one column: icon, label, bar, value, all lined up.
+          const meters = [['star', 'რეპუტაცია', 21], ['bolt', 'ენერგია', 50]].map(([tex, label, y]) => {
+            this.add.image(374, y, tex).setScale(tex === 'bolt' ? 0.7 : 0.8).setDepth(D);
+            return { y, label: text(this, 390, y, label, 12, C.muted).setOrigin(0, 0.5).setDepth(D) };
+          });
+          const barX = 390 + Math.max(...meters.map((m) => m.label.width)) + 10;
+          const [repRow, energyRow] = meters.map(({ y }) => ({
+            fill: makeBar(this, barX, y, 170, 14, D),
+            value: text(this, barX + 178, y, '', 13, C.ink, { fontStyle: 'bold' }).setOrigin(0, 0.5).setDepth(D)
+          }));
+          this.repFill = repRow.fill; this.repText = repRow.value;
+          this.energyFill = energyRow.fill; this.energyText = energyRow.value;
 
           const inv = [['seed', 'seeds', 'თესლი'], ['wheat', 'wheat', 'ხორბალი'], ['sack', 'localFlour', 'ადგილ. ფქვილი'], ['sackImport', 'importedFlour', 'იმპორტული']];
           this.invTexts = {};
@@ -1085,10 +1151,10 @@
           this.openText.setText(open ? 'სახინკლე ღიაა 21:00-მდე' : this.timeMin < RULES.openAt ? 'სახინკლე იხსნება 10:00-ზე' : 'სახინკლე დაკეტილია — წადი დასაძინებლად');
           this.openSign.setText(open ? 'ღიაა' : 'დაკეტილია').setBackgroundColor(open ? '#111111' : '#7a7a7a');
 
-          this.moneyText.setText('$' + this.money);
+          this.moneyText.setText(lari(this.money));
           this.energyFill.scaleX = this.energy / RULES.energyMax;
           this.energyFill.setAlpha(this.energy <= 20 && Math.sin(this.time.now / 120) > 0 ? 0.3 : 1);
-          this.energyText.setText(Math.round(this.energy) + ' ენერგია');
+          this.energyText.setText(String(Math.round(this.energy)));
 
           const rep = Phaser.Math.Clamp(this.reputation, 0, 100);
           this.repFill.scaleX = rep / 100;
@@ -1187,8 +1253,8 @@
             ['მომსახურებული', s.served + '  (' + s.servedLocal + ' ადგილობრივი, ' + s.servedImported + ' იმპორტული)'],
             ['გაბრაზებული წავიდა', s.angry],
             ['მოყვანილი ხორბალი', s.harvested],
-            ['ნაყიდი იმპორტული ტომრები', s.imported + '  ($' + s.importSpend + ')'],
-            ['შემოსავალი / საბოლოო ფული', '$' + s.revenue + ' / $' + data.money],
+            ['ნაყიდი იმპორტული ტომრები', s.imported + '  (' + lari(s.importSpend) + ')'],
+            ['შემოსავალი / საბოლოო ფული', lari(s.revenue) + ' / ' + lari(data.money)],
             ['ადგილობრივმა ხორბალმა დაფარა', localCoverage + '% მოთხოვნისა'],
             ['ადგილობრივის წილი მთელ ფქვილში', localShare + '%']
           ];
