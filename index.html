@@ -292,47 +292,17 @@
           this.makeTextures();
           this.cameras.main.setBackgroundColor(PAPER);
           stipple(this.add.graphics(), 0, 0, W, H, 700);
-          panel(this, 170, 60, 860, 640);
+          panel(this, 280, 195, 640, 370);
 
-          this.add.image(W / 2, 135, 'khinkali').setScale(2);
-          text(this, W / 2, 210, 'ხინკალი და ხორბალი', 40, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
-          text(this, W / 2, 250, 'მართე ფერმა და სახინკლე ქვეყანაში, რომელსაც საკუთარი ხორბლის მხოლოდ ' + LOCAL_CAP_PERCENT + '% მოჰყავს', 16, C.muted).setOrigin(0.5);
+          this.add.image(W / 2, 270, 'khinkali').setScale(2);
+          text(this, W / 2, 345, 'ხინკალი და ხორბალი', 40, C.ink, { fontStyle: 'bold' }).setOrigin(0.5);
+          text(this, W / 2, 388, 'მოიყვანე ხორბალი, მოხარშე ხინკალი, გაუმასპინძლდი სტუმრებს', 16, C.muted).setOrigin(0.5);
 
-          const cols = [
-            ['ფერმა', [
-              'იარე WASD-ით ან ისრებით; E — მოქმედება.',
-              'გადათოხნე ნაკვეთი, დათესე თესლი, მორწყე ყოველდღე.',
-              'ხორბალი მწიფდება ' + RULES.matureStage + ' მორწყული ღამის შემდეგ.',
-              'წაიღე ხორბალი წისქვილში ფქვილის დასამზადებლად.',
-              'მხოლოდ ' + RULES.plots + ' ნაკვეთია — მიწა არასდროს გაიზრდება.'
-            ]],
-            ['სახინკლე', [
-              'ღიაა 10:00–21:00. სტუმრები სხედან და ელოდებიან.',
-              'მოამზადე ქურაზე: 1 ფქვილი + ხორცი = 1 თეფში.',
-              'მიუტანე თეფშები (მაქს. ' + RULES.maxPlates + ') იმას, ვინც შეუკვეთა.',
-              'ნელი მომსახურება = გაბრაზებული სტუმრები = დაკარგული რეპუტაცია.',
-              'რეპუტაცია 0% — თამაში მთავრდება.'
-            ]],
-            ['გადარჩენა', [
-              'შრომას ენერგია სჭირდება. დააჭირე Q-ს, რომ შეჭამო თეფში (+' + RULES.eatEnergy + ').',
-              'დაიძინე ფერმის სახლში დღის დასასრულებლად.',
-              'იმპორტის სატვირთო უცხოურ ფქვილს ყიდის…',
-              '…ფასად, რომელიც მსოფლიო ბაზარს მიჰყვება.',
-              'ყოველი იმპორტი ბოლოს შენს წინააღმდეგ ითვლება.'
-            ]]
-          ];
-          cols.forEach(([title, lines], i) => {
-            const x = 200 + i * 280;
-            text(this, x, 290, title, 13, C.muted, { fontStyle: 'bold' });
-            text(this, x, 312, lines.join('\n'), 13, C.ink, { lineSpacing: 8, wordWrap: { width: 262 } });
-          });
-
-          text(this, W / 2, 556, LOCAL_CAP_PERCENT + '% ადგილობრივი ხორბლის ლიმიტი', 15, C.paper, {
+          text(this, W / 2, 438, LOCAL_CAP_PERCENT + '% ადგილობრივი ხორბლის ლიმიტი', 15, C.paper, {
             fontStyle: 'bold', backgroundColor: '#111111', padding: { x: 14, y: 8 }
           }).setOrigin(0.5);
 
-          makeButton(this, W / 2, 622, 260, 62, 'დაიწყე 1-ლი დღე', null, () => this.scene.start('MainGame'));
-          text(this, W / 2, 674, 'დასაწყებად დააჭირე Enter-ს', 14, C.muted).setOrigin(0.5);
+          makeButton(this, W / 2, 510, 260, 62, 'დაიწყე 1-ლი დღე', null, () => this.scene.start('MainGame'));
           this.input.keyboard.once('keydown-ENTER', () => this.scene.start('MainGame'));
         }
 
